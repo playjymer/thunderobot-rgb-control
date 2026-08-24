@@ -38,10 +38,13 @@ class KeyboardDriver:
         self.gain_b = 1.0
 
         if dll_path is None:
-            curr_dir = os.path.dirname(os.path.abspath(__file__))
-            cand = os.path.join(curr_dir, "lib", "InsydeDCHU.dll")
+            base_dir = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+            cand = os.path.join(base_dir, "lib", "InsydeDCHU.dll")
+            cand_direct = os.path.join(base_dir, "InsydeDCHU.dll")
             if os.path.exists(cand):
                 dll_path = cand
+            elif os.path.exists(cand_direct):
+                dll_path = cand_direct
             else:
                 for sys_path in [
                     r"C:\Program Files (x86)\ControlCenter\DCHU\InsydeDCHU.dll",
