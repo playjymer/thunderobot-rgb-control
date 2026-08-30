@@ -1,6 +1,5 @@
 """
 Thunderobot RGB Control Suite Pro — Main Application Entry Point.
-Single-Instance Enforcement, Fn Interceptor Daemon, and Wallpaper Engine Sync Provider.
 """
 
 import sys
@@ -11,7 +10,6 @@ import time
 import logging
 import psutil
 
-# Ensure app directory is on path
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 if APP_DIR not in sys.path:
     sys.path.insert(0, APP_DIR)
@@ -42,10 +40,9 @@ def check_single_instance():
     return mutex
 
 
-def start_stock_app_interceptor(gui_ref_getter):
+def start_stock_app_interceptor(main_win_getter):
     """
-    Background daemon that monitors when FnKey.exe / CC launches stock Control Center
-    upon Fn + / (Numpad) press, terminates the old bloatware, and executes the assigned Fn action.
+    Monitors when Fn + / (Numpad) triggers stock Control Center, kills old CC, and lifts our GUI to front.
     """
     TARGET_PROCS = {
         "ledkeyboardsetting.exe",
@@ -65,16 +62,14 @@ def start_stock_app_interceptor(gui_ref_getter):
                 for proc in psutil.process_iter(["pid", "name"]):
                     name = proc.info["name"]
                     if name and name.lower() in TARGET_PROCS:
-                        logger.info(f"Intercepted stock backlight app: {name} (PID: {proc.info['pid']}). Terminating...")
+                        logger.info(f"Intercepted stock backlight app: {name}. Bringing our GUI to front...")
                         try:
                             proc.kill()
                         except Exception:
                             pass
-                        
-                        # Execute assigned action for Fn + /
-                        fn_hk = config.get("fn_hotkeys", {})
-                        act = fn_hk.get("num_slash", {}).get("action", "open_gui")
-                        engine.execute_action(act)
+                        win = main_win_getter()
+                        if win:
+                            win.after(0, win._restore_and_focus)
             except Exception:
                 pass
 
@@ -88,7 +83,6 @@ def main():
         logger.warning("Another instance of Thunderobot RGB Control is already running. Exiting.")
         sys.exit(0)
 
-    # Start Lighting Engine & Wallpaper Engine Sync
     engine.start()
 
     main_win = None
@@ -100,7 +94,7 @@ def main():
 
     callbacks = {
         "show_window": lambda: main_win.after(0, main_win._restore_and_focus),
-        "toggle_power": lambda: engine.execute_action("toggle_power"),
+        "toggle_power": lambda: (config.set("power", not engine.power), engine.update_params(power=not engine.power), main_win.after(0, main_win._sync_gui_with_engine)),
         "set_mode": lambda m: (config.set("mode", m), engine.update_params(mode=m), main_win.after(0, main_win._sync_gui_with_engine)),
         "set_brightness": lambda b: (config.set("brightness", b), engine.update_params(brightness=b), main_win.after(0, main_win._sync_gui_with_engine)),
         "exit_app": lambda: main_win.after(0, main_win.destroy),
@@ -109,7 +103,6 @@ def main():
     tray = TrayIcon(callbacks)
     tray.start()
 
-    # Hook engine callbacks
     def on_gui_request():
         main_win.after(0, main_win._restore_and_focus)
 

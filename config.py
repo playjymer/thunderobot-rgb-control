@@ -12,24 +12,6 @@ logger = logging.getLogger(__name__)
 
 CONFIG_PATH = os.path.expanduser("~/.thunderobot_rgb.json")
 
-HOTKEY_ACTIONS = [
-    ("open_gui", "🚀 Открыть / Развернуть программу"),
-    ("toggle_power", "💡 Вкл / Выкл подсветку"),
-    ("brightness_up", "🔆 Увеличить яркость (+10%)"),
-    ("brightness_down", "🔅 Уменьшить яркость (-10%)"),
-    ("next_mode", "➡️ Следующий режим подсветки"),
-    ("prev_mode", "⬅️ Предыдущий режим подсветки"),
-    ("mode_wallpaper_engine", "🖼️ Wallpaper Engine Sync"),
-    ("mode_rainbow", "🌈 Радужная волна"),
-    ("mode_audio_vis", "🎵 Музыкальный визуализатор"),
-    ("mode_wpm", "⌨️ Спидометр скорости печати"),
-    ("mode_cyberpunk", "🌆 Киберпанк (Neon 2077)"),
-    ("mode_fire", "🔥 Живое пламя (Fire & Ember)"),
-    ("mode_matrix", "🟢 Матрица (Matrix Rain)"),
-    ("mode_police", "🚨 Проблесковые маячки"),
-    ("mode_static", "💡 Статичный цвет"),
-]
-
 DEFAULT_CONFIG = {
     "power": True,
     "mode": "Rainbow Wave",
@@ -64,15 +46,6 @@ DEFAULT_CONFIG = {
         "vk": [0, 119, 255],
         "browser": [255, 180, 0],
         "windows": [0, 220, 255],
-    },
-    "fn_hotkeys": {
-        "num_slash": {"name": "Fn + / (Numpad)", "action": "open_gui", "label": "🚀 Открыть / Развернуть программу"},
-        "num_multiply": {"name": "Fn + * (Numpad)", "action": "next_mode", "label": "➡️ Следующий режим подсветки"},
-        "num_minus": {"name": "Fn + - (Numpad)", "action": "brightness_down", "label": "🔅 Уменьшить яркость (-10%)"},
-        "num_plus": {"name": "Fn + + (Numpad)", "action": "brightness_up", "label": "🔆 Увеличить яркость (+10%)"},
-        "custom_wp": {"name": "Ctrl + Shift + W", "action": "mode_wallpaper_engine", "label": "🖼️ Wallpaper Engine Sync"},
-        "custom_aud": {"name": "Ctrl + Shift + A", "action": "mode_audio_vis", "label": "🎵 Музыкальный визуализатор"},
-        "custom_pwr": {"name": "Ctrl + Shift + Space", "action": "toggle_power", "label": "💡 Вкл / Выкл подсветку"},
     },
     "profiles": {
         "Cyberpunk": {
@@ -139,8 +112,6 @@ class ConfigManager:
                         self.data["profiles"] = {**DEFAULT_CONFIG["profiles"], **loaded["profiles"]}
                     if "app_notif_colors" in loaded:
                         self.data["app_notif_colors"] = {**DEFAULT_CONFIG["app_notif_colors"], **loaded["app_notif_colors"]}
-                    if "fn_hotkeys" in loaded:
-                        self.data["fn_hotkeys"] = {**DEFAULT_CONFIG["fn_hotkeys"], **loaded["fn_hotkeys"]}
             except Exception as e:
                 logger.error(f"Failed to load config: {e}")
         self._check_autostart_registry()
