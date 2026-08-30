@@ -1,7 +1,9 @@
 """
 Lighting Effects Engine for Thunderobot RGB Keyboard.
-Features Buttery-Smooth Temporal Anti-Aliasing, Fluid Notification Waves,
-Zero-Latency Multi-App Detection, and 50 FPS Fluid Transitions.
+Features:
+- Wallpaper Engine Sync (Razer Chroma REST Server + Live Desktop Capture)
+- Fn Key Action Dispatcher (Next/Prev Mode, Brightness +/-, Power toggle, Direct Mode switch)
+- Buttery-Smooth Temporal Anti-Aliasing & Fluid Notification Waves
 """
 
 import time
@@ -17,6 +19,7 @@ from datetime import datetime
 from PIL import ImageGrab
 
 from driver import driver, ZONE_ALL, ZONE_LEFT, ZONE_MIDDLE, ZONE_RIGHT
+from wallpaper_sync import wallpaper_sync
 
 logger = logging.getLogger(__name__)
 
@@ -59,13 +62,13 @@ def apply_brightness(rgb, brightness_0_to_255):
 
 
 DEFAULT_APP_NOTIFICATION_COLORS = {
-    "telegram": (0, 180, 255),      # Light Blue / Cyan
-    "discord": (120, 80, 255),      # Blurple / Violet
-    "steam": (30, 150, 255),        # Steam Navy / Ice Blue
-    "whatsapp": (37, 211, 102),     # WhatsApp Green
-    "vk": (0, 119, 255),            # VK Blue
-    "browser": (255, 180, 0),       # Chrome/Edge Amber
-    "windows": (0, 220, 255),       # Windows Neon Cyan
+    "telegram": (0, 180, 255),
+    "discord": (120, 80, 255),
+    "steam": (30, 150, 255),
+    "whatsapp": (37, 211, 102),
+    "vk": (0, 119, 255),
+    "browser": (255, 180, 0),
+    "windows": (0, 220, 255),
 }
 
 MODE_CATEGORIES = {
@@ -77,6 +80,7 @@ MODE_CATEGORIES = {
         ("Strobe / Flash", "⚡ Стробоскоп", "Энергичные импульсные вспышки с регулируемой частотой."),
     ],
     "🎵 Интерактив": [
+        ("Wallpaper Engine Sync", "🖼️ Wallpaper Engine Sync", "Синхронизация подсветки клавиатуры с динамическими обоями Wallpaper Engine (Chroma SDK / Live Desktop)."),
         ("Audio Visualizer", "🎵 Музыкальный визуализатор", "Клавиатура вспыхивает и пульсирует в такт басам и звуку из Windows (WASAPI)."),
         ("WPM Typing Speed", "⌨️ Спидометр скорости печати", "Цвет плавно разгоняется от синего до огненно-красного по скорости набора (WPM)."),
         ("Reactive Typing", "✨ Реактивный ввод", "Клавиатура вспыхивает ярким цветом при каждом нажатии клавиши и плавно гаснет."),
@@ -180,20 +184,24 @@ class LightingEngine:
         self._pomodoro_start = time.time()
 
         self.on_frame_rendered = None
+        self.on_mode_changed_externally = None
+        self.on_gui_requested = None
 
-        # Start notification watchers
+        # Start background watchers
         self._start_notification_watchers()
 
     def start(self):
         if self._running:
             return
         self._running = True
+        wallpaper_sync.start()
         self._thread = threading.Thread(target=self._render_loop, daemon=True)
         self._thread.start()
         logger.info("Lighting engine started.")
 
     def stop(self):
         self._running = False
+        wallpaper_sync.stop()
         if self._thread:
             self._thread.join(timeout=1.0)
         logger.info("Lighting engine stopped.")
@@ -204,8 +212,85 @@ class LightingEngine:
                 if hasattr(self, k):
                     setattr(self, k, v)
 
+    def execute_action(self, action: str):
+        """Executes a hotkey action (Next mode, Brightness +/-, Toggle Power, etc.)."""
+        logger.info(f"Executing action: {action}")
+        
+        if action == "open_gui":
+            if self.on_gui_requested:
+                self.on_gui_requested()
+        elif action == "toggle_power":
+            new_pwr = not self.power
+            self.update_params(power=new_pwr)
+            driver.set_power(new_pwr)
+            if self.on_mode_changed_externally:
+                self.on_mode_changed_externally()
+        elif action == "brightness_up":
+            new_b = min(255, self.brightness + 26)
+            self.update_params(brightness=new_b)
+            if self.on_mode_changed_externally:
+                self.on_mode_changed_externally()
+        elif action == "brightness_down":
+            new_b = max(0, self.brightness - 26)
+            self.update_params(brightness=new_b)
+            if self.on_mode_changed_externally:
+                self.on_mode_changed_externally()
+        elif action == "next_mode":
+            try:
+                curr_idx = self.EFFECT_MODES.index(self.mode)
+                next_m = self.EFFECT_MODES[(curr_idx + 1) % len(self.EFFECT_MODES)]
+            except ValueError:
+                next_m = self.EFFECT_MODES[0]
+            self.update_params(mode=next_m)
+            if self.on_mode_changed_externally:
+                self.on_mode_changed_externally()
+        elif action == "prev_mode":
+            try:
+                curr_idx = self.EFFECT_MODES.index(self.mode)
+                prev_m = self.EFFECT_MODES[(curr_idx - 1) % len(self.EFFECT_MODES)]
+            except ValueError:
+                prev_m = self.EFFECT_MODES[-1]
+            self.update_params(mode=prev_m)
+            if self.on_mode_changed_externally:
+                self.on_mode_changed_externally()
+        elif action == "mode_wallpaper_engine":
+            self.update_params(mode="Wallpaper Engine Sync")
+            if self.on_mode_changed_externally:
+                self.on_mode_changed_externally()
+        elif action == "mode_rainbow":
+            self.update_params(mode="Rainbow Wave")
+            if self.on_mode_changed_externally:
+                self.on_mode_changed_externally()
+        elif action == "mode_audio_vis":
+            self.update_params(mode="Audio Visualizer")
+            if self.on_mode_changed_externally:
+                self.on_mode_changed_externally()
+        elif action == "mode_wpm":
+            self.update_params(mode="WPM Typing Speed")
+            if self.on_mode_changed_externally:
+                self.on_mode_changed_externally()
+        elif action == "mode_cyberpunk":
+            self.update_params(mode="Cyberpunk Neon")
+            if self.on_mode_changed_externally:
+                self.on_mode_changed_externally()
+        elif action == "mode_fire":
+            self.update_params(mode="Fire & Ember")
+            if self.on_mode_changed_externally:
+                self.on_mode_changed_externally()
+        elif action == "mode_matrix":
+            self.update_params(mode="Matrix Rain")
+            if self.on_mode_changed_externally:
+                self.on_mode_changed_externally()
+        elif action == "mode_police":
+            self.update_params(mode="Police Siren")
+            if self.on_mode_changed_externally:
+                self.on_mode_changed_externally()
+        elif action == "mode_static":
+            self.update_params(mode="Static")
+            if self.on_mode_changed_externally:
+                self.on_mode_changed_externally()
+
     def trigger_notification_flash(self, app_name="telegram", color=None, duration=1.8):
-        """Trigger a fluid, smooth double-wave notification flash."""
         now = time.time()
         with self._lock:
             if app_name == self._last_notif_app and (now - self._last_notif_time < 0.8):
@@ -338,6 +423,9 @@ class LightingEngine:
 
     def _start_listeners(self):
         try:
+            # Track modifiers
+            active_mods = set()
+
             def on_press(key):
                 now = time.time()
                 with self._lock:
@@ -346,10 +434,53 @@ class LightingEngine:
                     self._keystroke_times.append(now)
                     self._last_user_activity = now
 
+                # Catch hotkey combos
+                from config import config
+                hotkeys = config.get("fn_hotkeys", {})
+
+                # Check modifier keys
+                if key in (pk_keyboard.Key.ctrl, pk_keyboard.Key.ctrl_l, pk_keyboard.Key.ctrl_r):
+                    active_mods.add("ctrl")
+                elif key in (pk_keyboard.Key.shift, pk_keyboard.Key.shift_l, pk_keyboard.Key.shift_r):
+                    active_mods.add("shift")
+                elif key in (pk_keyboard.Key.alt, pk_keyboard.Key.alt_l, pk_keyboard.Key.alt_r):
+                    active_mods.add("alt")
+
+                # Check Numpad keys
+                if hasattr(key, "char") and key.char is not None:
+                    ch = key.char
+                    if ch == "*":
+                        act = hotkeys.get("num_multiply", {}).get("action")
+                        if act: self.execute_action(act)
+                    elif ch == "-":
+                        act = hotkeys.get("num_minus", {}).get("action")
+                        if act: self.execute_action(act)
+                    elif ch == "+":
+                        act = hotkeys.get("num_plus", {}).get("action")
+                        if act: self.execute_action(act)
+                    elif ch.lower() == "w" and "ctrl" in active_mods and "shift" in active_mods:
+                        act = hotkeys.get("custom_wp", {}).get("action")
+                        if act: self.execute_action(act)
+                    elif ch.lower() == "a" and "ctrl" in active_mods and "shift" in active_mods:
+                        act = hotkeys.get("custom_aud", {}).get("action")
+                        if act: self.execute_action(act)
+
+                elif key == pk_keyboard.Key.space and "ctrl" in active_mods and "shift" in active_mods:
+                    act = hotkeys.get("custom_pwr", {}).get("action")
+                    if act: self.execute_action(act)
+
+            def on_release(key):
+                if key in (pk_keyboard.Key.ctrl, pk_keyboard.Key.ctrl_l, pk_keyboard.Key.ctrl_r):
+                    active_mods.discard("ctrl")
+                elif key in (pk_keyboard.Key.shift, pk_keyboard.Key.shift_l, pk_keyboard.Key.shift_r):
+                    active_mods.discard("shift")
+                elif key in (pk_keyboard.Key.alt, pk_keyboard.Key.alt_l, pk_keyboard.Key.alt_r):
+                    active_mods.discard("alt")
+
             def on_move(x, y):
                 self._last_user_activity = time.time()
 
-            self._key_listener = pk_keyboard.Listener(on_press=on_press)
+            self._key_listener = pk_keyboard.Listener(on_press=on_press, on_release=on_release)
             self._key_listener.daemon = True
             self._key_listener.start()
 
@@ -424,20 +555,17 @@ class LightingEngine:
                         raw_mid = lerp_color(raw_mid, (255, 120, 30), 0.5)
                         raw_right = lerp_color(raw_right, (255, 120, 30), 0.5)
 
-                    # Fluid Notification Wave Overlay (Smooth Bell + Double Wave)
+                    # Fluid Notification Wave Overlay
                     if is_notification:
                         elapsed_n = frame_start - self._notification_start
                         dur = max(0.2, self._notification_duration)
                         progress = max(0.0, min(1.0, elapsed_n / dur))
                         
-                        # Bell envelope smoothly goes from 0.0 -> 1.0 -> 0.0
                         envelope = math.sin(progress * math.pi)
-                        # Gentle dual pulsation
                         wave = 0.5 + 0.5 * math.sin(progress * math.pi * 4.0 - math.pi / 2.0)
                         blend_factor = (envelope ** 1.3) * (0.35 + 0.65 * wave)
                         blend_factor = max(0.0, min(1.0, blend_factor))
 
-                        # Smoothly illuminate
                         flash_b = int(effective_bright + (255 - effective_bright) * (envelope * 0.7))
                         notif_colored = apply_brightness(self._notification_color, flash_b)
                         
@@ -445,7 +573,7 @@ class LightingEngine:
                         raw_mid = lerp_color(raw_mid, notif_colored, blend_factor)
                         raw_right = lerp_color(raw_right, notif_colored, blend_factor)
 
-                # Temporal anti-aliasing / exponential smoothing for zero harsh cuts
+                # Temporal anti-aliasing (50 FPS smooth glide)
                 alpha = 0.38
                 for idx in range(3):
                     self._smooth_left[idx] += (raw_left[idx] - self._smooth_left[idx]) * alpha
@@ -460,7 +588,7 @@ class LightingEngine:
                 self.current_middle = final_mid
                 self.current_right = final_right
 
-            # Send to hardware only on changes
+            # Send to hardware
             if (final_left != last_sent_left or final_mid != last_sent_mid or final_right != last_sent_right):
                 if self.zone_mode == "single" or final_left == final_mid == final_right:
                     driver.set_color(final_mid[0], final_mid[1], final_mid[2], ZONE_ALL)
@@ -483,7 +611,11 @@ class LightingEngine:
         speed = max(0.05, float(self.speed))
         is_single = (self.zone_mode == "single")
 
-        if mode == "Static":
+        if mode == "Wallpaper Engine Sync":
+            l_col, m_col, r_col = wallpaper_sync.get_colors(is_single=is_single)
+            return apply_brightness(l_col, bright), apply_brightness(m_col, bright), apply_brightness(r_col, bright)
+
+        elif mode == "Static":
             if not is_single:
                 l = apply_brightness(self.color_left, bright)
                 m = apply_brightness(self.color_middle, bright)

@@ -1,8 +1,11 @@
 """
 Modern Graphical User Interface for Thunderobot RGB Keyboard.
-Built with CustomTkinter, featuring Categorized Effects Grid,
-Multi-App Notification Flash Colors (Telegram, Discord, Steam, WhatsApp),
-Audio Visualizer, WPM Speedometer, and Calibration Wizard.
+Built with CustomTkinter, featuring:
+- Fn Hotkeys Remapping & Custom Shortcuts
+- Wallpaper Engine Sync (Chroma SDK & Live Desktop)
+- Categorized Effects Grid & Live Visualizer
+- Multi-App Notification Flash Colors (Telegram, Discord, Steam, WhatsApp)
+- Hardware Calibration Wizard (BRG / BGR / Gain)
 """
 
 import tkinter as tk
@@ -18,8 +21,9 @@ import logging
 import psutil
 
 from driver import driver
-from config import config
+from config import config, HOTKEY_ACTIONS
 from effects import engine, MODE_CATEGORIES
+from wallpaper_sync import wallpaper_sync
 
 logger = logging.getLogger(__name__)
 
@@ -246,7 +250,35 @@ class MainWindow(ctk.CTk):
         self._build_main_controls()
 
         engine.on_frame_rendered = self._update_visualizer_colors
+        engine.on_mode_changed_externally = self._on_external_mode_change
+        engine.on_gui_requested = self._bring_to_front
+
         self._load_from_config()
+
+    def _bring_to_front(self):
+        self.after(0, self._restore_and_focus)
+
+    def _restore_and_focus(self):
+        self.deiconify()
+        self.lift()
+        self.focus_force()
+
+    def _on_external_mode_change(self):
+        self.after(0, self._sync_gui_with_engine)
+
+    def _sync_gui_with_engine(self):
+        curr_m = engine.mode
+        config.set("mode", curr_m)
+        self._update_mode_description()
+        self.power_switch.select() if engine.power else self.power_switch.deselect()
+        self.bright_slider.set(engine.brightness)
+        self.bright_lbl.configure(text=f"{int(engine.brightness/2.55)}%")
+
+        for mid, btn in self._mode_buttons.items():
+            if mid == curr_m:
+                btn.configure(fg_color="#00ADB5", hover_color="#00D2DD", font=ctk.CTkFont(size=13, weight="bold"))
+            else:
+                btn.configure(fg_color="#20222B", hover_color="#2C2F3D", font=ctk.CTkFont(size=13, weight="normal"))
 
     def _build_header(self):
         header = ctk.CTkFrame(self, fg_color="#1A1C24", height=65, corner_radius=0)
@@ -349,12 +381,14 @@ class MainWindow(ctk.CTk):
 
         tab_effects = self.tabview.add("Режимы и Эффекты")
         tab_colors = self.tabview.add("Цветовая палитра")
+        tab_hotkeys = self.tabview.add("Горячие клавиши (Fn)")
         tab_calib = self.tabview.add("Калибровка цветов (Core D)")
         tab_profiles = self.tabview.add("Профили")
         tab_settings = self.tabview.add("Настройки")
 
         self._build_effects_tab(tab_effects)
         self._build_colors_tab(tab_colors)
+        self._build_hotkeys_tab(tab_hotkeys)
         self._build_calibration_tab(tab_calib)
         self._build_profiles_tab(tab_profiles)
         self._build_settings_tab(tab_settings)
@@ -571,6 +605,102 @@ class MainWindow(ctk.CTk):
             command=self._open_custom_picker
         ).pack(fill="x", padx=15, pady=(20, 15))
 
+    def _build_hotkeys_tab(self, tab):
+        container = ctk.CTkScrollableFrame(tab, fg_color="#20222B", corner_radius=10)
+        container.pack(fill="both", expand=True, padx=20, pady=15)
+
+        ctk.CTkLabel(container, text="Переназначение горячих клавиш и сочетаний Fn", font=ctk.CTkFont(size=14, weight="bold"), text_color="#00ADB5").pack(anchor="w", padx=10, pady=(10, 5))
+        ctk.CTkLabel(container, text="Назначьте любое действие на аппаратные клавиши ноутбука (Numpad) и глобальные сочетания:", font=ctk.CTkFont(size=11), text_color="#8E94A5").pack(anchor="w", padx=10, pady=(0, 10))
+
+        hotkeys_card = ctk.CTkFrame(container, fg_color="#181920", corner_radius=10)
+        hotkeys_card.pack(fill="x", padx=10, pady=5)
+
+        hotkey_dict = config.get("fn_hotkeys", {})
+        action_names = [label for _, label in HOTKEY_ACTIONS]
+        action_map_to_id = {label: aid for aid, label in HOTKEY_ACTIONS}
+        action_map_to_label = {aid: label for aid, label in HOTKEY_ACTIONS}
+
+        self.hotkey_vars = {}
+
+        for key_id, info in hotkey_dict.items():
+            r_frame = ctk.CTkFrame(hotkeys_card, fg_color="#20222B", corner_radius=8, height=46)
+            r_frame.pack(fill="x", padx=12, pady=4)
+            r_frame.pack_propagate(False)
+            r_frame.columnconfigure(0, weight=1)
+            r_frame.columnconfigure(1, weight=0)
+            r_frame.columnconfigure(2, weight=0)
+
+            k_name = info.get("name", key_id)
+            ctk.CTkLabel(
+                r_frame,
+                text=f"⌨️  {k_name}",
+                font=ctk.CTkFont(size=13, weight="bold"),
+                text_color="#E0E6ED",
+                anchor="w"
+            ).grid(row=0, column=0, sticky="w", padx=(15, 10), pady=8)
+
+            curr_act = info.get("action", "open_gui")
+            curr_lbl = action_map_to_label.get(curr_act, action_names[0])
+            
+            var = tk.StringVar(value=curr_lbl)
+            self.hotkey_vars[key_id] = var
+
+            menu = ctk.CTkOptionMenu(
+                r_frame,
+                values=action_names,
+                variable=var,
+                command=lambda val, kid=key_id: self._on_hotkey_action_changed(kid, val),
+                width=240,
+                height=30,
+                fg_color="#2B2E3D",
+                button_color="#00ADB5"
+            )
+            menu.grid(row=0, column=1, padx=(0, 10), pady=8)
+
+            ctk.CTkButton(
+                r_frame,
+                text="Тест ⚡",
+                fg_color="#2B2E3D",
+                hover_color="#383C50",
+                font=ctk.CTkFont(size=12, weight="bold"),
+                width=80,
+                height=30,
+                corner_radius=6,
+                command=lambda kid=key_id: self._test_hotkey_action(kid)
+            ).grid(row=0, column=2, padx=(0, 12), pady=8)
+
+        # Reset button
+        ctk.CTkButton(
+            container,
+            text="Сбросить все сочетания по умолчанию",
+            fg_color="#282B37",
+            hover_color="#35394A",
+            height=34,
+            command=self._reset_hotkeys_default
+        ).pack(anchor="w", padx=10, pady=(15, 10))
+
+    def _on_hotkey_action_changed(self, key_id, label_val):
+        action_id = next((aid for aid, lbl in HOTKEY_ACTIONS if lbl == label_val), "open_gui")
+        hk = config.get("fn_hotkeys", {})
+        if key_id in hk:
+            hk[key_id]["action"] = action_id
+            hk[key_id]["label"] = label_val
+            config.set("fn_hotkeys", hk)
+
+    def _test_hotkey_action(self, key_id):
+        hk = config.get("fn_hotkeys", {})
+        if key_id in hk:
+            act = hk[key_id].get("action", "open_gui")
+            engine.execute_action(act)
+
+    def _reset_hotkeys_default(self):
+        from config import DEFAULT_CONFIG
+        config.set("fn_hotkeys", dict(DEFAULT_CONFIG["fn_hotkeys"]))
+        hk = DEFAULT_CONFIG["fn_hotkeys"]
+        for kid, info in hk.items():
+            if kid in self.hotkey_vars:
+                self.hotkey_vars[kid].set(info.get("label", ""))
+
     def _build_calibration_tab(self, tab):
         tab.columnconfigure(0, weight=1)
         tab.columnconfigure(1, weight=1)
@@ -767,11 +897,40 @@ class MainWindow(ctk.CTk):
         container = ctk.CTkScrollableFrame(tab, fg_color="#20222B", corner_radius=10)
         container.pack(fill="both", expand=True, padx=20, pady=15)
 
-        ctk.CTkLabel(container, text="Световые уведомления от мессенджеров и программ", font=ctk.CTkFont(size=14, weight="bold"), text_color="#00ADB5").pack(anchor="w", padx=10, pady=(10, 5))
+        # Wallpaper Engine Integration Block
+        ctk.CTkLabel(container, text="Синхронизация с Wallpaper Engine (Плагин)", font=ctk.CTkFont(size=14, weight="bold"), text_color="#00ADB5").pack(anchor="w", padx=10, pady=(10, 4))
+        ctk.CTkLabel(container, text="Автоматическая синхронизация цветов с обоями рабочего стола (Razer Chroma SDK + захват экрана):", font=ctk.CTkFont(size=11), text_color="#8E94A5").pack(anchor="w", padx=10, pady=(0, 8))
+
+        we_card = ctk.CTkFrame(container, fg_color="#181920", corner_radius=10)
+        we_card.pack(fill="x", padx=10, pady=4)
+
+        we_box = ctk.CTkFrame(we_card, fg_color="transparent")
+        we_box.pack(fill="x", padx=15, pady=12)
+
+        self.we_status_lbl = ctk.CTkLabel(
+            we_box,
+            text="🟢 Razer Chroma SDK Server активен (порт 12018)" if wallpaper_sync.is_connected else "🟢 Сервер Chroma SDK активен • Захват рабочего стола готов",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color="#00FF88"
+        )
+        self.we_status_lbl.pack(anchor="w", pady=(0, 6))
+
+        ctk.CTkButton(
+            we_box,
+            text="🖼️ Включить режим синхронизации с Wallpaper Engine",
+            fg_color="#00ADB5",
+            hover_color="#00D2DD",
+            font=ctk.CTkFont(weight="bold"),
+            height=34,
+            command=lambda: engine.execute_action("mode_wallpaper_engine")
+        ).pack(anchor="w", pady=(4, 0))
+
+        # Notification Master Switch & Rows
+        ctk.CTkLabel(container, text="Световые уведомления от мессенджеров и программ", font=ctk.CTkFont(size=14, weight="bold"), text_color="#00ADB5").pack(anchor="w", padx=10, pady=(16, 4))
         ctk.CTkLabel(container, text="Клавиатура вспыхивает цветом приложения при входящем сообщении:", font=ctk.CTkFont(size=11), text_color="#8E94A5").pack(anchor="w", padx=10, pady=(0, 8))
 
         notif_card = ctk.CTkFrame(container, fg_color="#181920", corner_radius=10)
-        notif_card.pack(fill="x", padx=10, pady=6)
+        notif_card.pack(fill="x", padx=10, pady=4)
 
         notif_top = ctk.CTkFrame(notif_card, fg_color="transparent")
         notif_top.pack(fill="x", padx=15, pady=(12, 8))
@@ -844,7 +1003,7 @@ class MainWindow(ctk.CTk):
                 command=lambda k=test_key: engine.trigger_notification_flash(app_name=k)
             ).grid(row=0, column=2, padx=(0, 12), pady=7)
 
-        ctk.CTkLabel(container, text="Системные настройки и умные функции", font=ctk.CTkFont(size=14, weight="bold"), text_color="#00ADB5").pack(anchor="w", padx=10, pady=(15, 8))
+        ctk.CTkLabel(container, text="Системные настройки и умные функции", font=ctk.CTkFont(size=14, weight="bold"), text_color="#00ADB5").pack(anchor="w", padx=10, pady=(16, 8))
 
         self.fn_redirect_switch = ctk.CTkSwitch(
             container,
@@ -886,7 +1045,7 @@ class MainWindow(ctk.CTk):
             command=self._on_idle_dim_toggle,
             progress_color="#00ADB5"
         )
-        if config.get("smart_idle_dim", True):
+        if config.get("smart_idle_dim", False):
             self.idle_dim_switch.select()
         self.idle_dim_switch.pack(anchor="w", padx=10, pady=6)
 
@@ -956,7 +1115,7 @@ class MainWindow(ctk.CTk):
             zone_mode=config.get("zone_mode", "single"),
             battery_saver=config.get("battery_saver", True),
             night_shift=config.get("night_shift", False),
-            smart_idle_dim=config.get("smart_idle_dim", True),
+            smart_idle_dim=config.get("smart_idle_dim", False),
             notification_flash_enabled=config.get("notification_flash", True),
             app_notif_colors={k: tuple(v) for k, v in config.get("app_notif_colors", {}).items()},
             color_single=tuple(config.get("color_single", [0, 255, 255])),
@@ -976,7 +1135,10 @@ class MainWindow(ctk.CTk):
             self.vis_zone_right.configure(fg_color=hex_r, hover_color=hex_r, text_color="#000000" if sum(right) > 380 else "#FFFFFF")
 
             m = engine.mode
-            if m == "WPM Typing Speed":
+            if m == "Wallpaper Engine Sync":
+                stat = "Chroma SDK ⚡" if wallpaper_sync.is_connected else "Desktop Ambient 🖥️"
+                self.telemetry_lbl.configure(text=f"🖼️ Wallpaper: {stat}")
+            elif m == "WPM Typing Speed":
                 self.telemetry_lbl.configure(text=f"⌨️ Скорость: {int(engine._current_wpm)} WPM")
             elif m == "Audio Visualizer":
                 pct = int(engine._audio_level * 100)

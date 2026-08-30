@@ -46,6 +46,7 @@ class TrayIcon:
                 pystray.MenuItem("Стробоскоп", lambda: self.callbacks["set_mode"]("Strobe / Flash")),
             )),
             pystray.MenuItem("🎵 Интерактив", pystray.Menu(
+                pystray.MenuItem("Wallpaper Engine Sync", lambda: self.callbacks["set_mode"]("Wallpaper Engine Sync")),
                 pystray.MenuItem("Музыкальный визуализатор", lambda: self.callbacks["set_mode"]("Audio Visualizer")),
                 pystray.MenuItem("Спидометр печати (WPM)", lambda: self.callbacks["set_mode"]("WPM Typing Speed")),
                 pystray.MenuItem("Реактивный ввод", lambda: self.callbacks["set_mode"]("Reactive Typing")),

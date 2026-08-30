@@ -1,29 +1,38 @@
 """
-Thunderobot RGB Keyboard Suite Pro - Main Entry Point.
-Manages Single Instance Mutex, System Tray, GUI lifecycle,
-and Automatic Interception of Fn + / (Stock Control Center).
+Thunderobot RGB Control Suite Pro — Main Application Entry Point.
+Single-Instance Enforcement, Fn Interceptor Daemon, and Wallpaper Engine Sync Provider.
 """
 
 import sys
 import os
 import ctypes
-from ctypes import wintypes
 import threading
 import time
 import logging
 import psutil
 
-# Configure logging
+# Ensure app directory is on path
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
+if APP_DIR not in sys.path:
+    sys.path.insert(0, APP_DIR)
+
+from config import config
+from driver import driver
+from effects import engine
+from wallpaper_sync import wallpaper_sync
+from gui import MainWindow
+from tray import TrayIcon
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 )
-logger = logging.getLogger("ThunderobotRGB")
+logger = logging.getLogger("Main")
 
 MUTEX_NAME = "Global\\ThunderobotRGBControlAppMutex"
 
 
-def acquire_mutex():
+def check_single_instance():
     kernel32 = ctypes.windll.kernel32
     mutex = kernel32.CreateMutexW(None, False, MUTEX_NAME)
     last_error = kernel32.GetLastError()
@@ -33,25 +42,39 @@ def acquire_mutex():
     return mutex
 
 
-def start_stock_app_interceptor(on_intercept_callback):
+def start_stock_app_interceptor(gui_ref_getter):
     """
-    Watches for the stock Clevo/Thunderobot Control Center / LedKeyboardSetting
-    process launched by Fn + / and instantly replaces it with our application!
+    Background daemon that monitors when FnKey.exe / CC launches stock Control Center
+    upon Fn + / (Numpad) press, terminates the old bloatware, and executes the assigned Fn action.
     """
+    TARGET_PROCS = {
+        "ledkeyboardsetting.exe",
+        "controlcenter30.exe",
+        "controlcenter.exe",
+        "clevocontrolcenter.exe",
+        "gamingcenter.exe",
+        "hotkeyapp.exe",
+    }
+
     def interceptor_loop():
-        target_procs = {"ledkeyboardsetting.exe", "controlcenter30.exe", "controlcenter.exe"}
         while True:
-            time.sleep(0.3)
+            time.sleep(0.4)
+            if not config.get("fn_redirect", True):
+                continue
             try:
-                for proc in psutil.process_iter(['pid', 'name']):
-                    try:
-                        pname = proc.info['name'].lower()
-                        if pname in target_procs:
-                            logger.info(f"Intercepted stock app: {pname} (PID {proc.info['pid']})")
-                            proc.terminate()
-                            on_intercept_callback()
-                    except (psutil.NoSuchProcess, psutil.AccessDenied):
-                        pass
+                for proc in psutil.process_iter(["pid", "name"]):
+                    name = proc.info["name"]
+                    if name and name.lower() in TARGET_PROCS:
+                        logger.info(f"Intercepted stock backlight app: {name} (PID: {proc.info['pid']}). Terminating...")
+                        try:
+                            proc.kill()
+                        except Exception:
+                            pass
+                        
+                        # Execute assigned action for Fn + /
+                        fn_hk = config.get("fn_hotkeys", {})
+                        act = fn_hk.get("num_slash", {}).get("action", "open_gui")
+                        engine.execute_action(act)
             except Exception:
                 pass
 
@@ -60,104 +83,52 @@ def start_stock_app_interceptor(on_intercept_callback):
 
 
 def main():
-    mutex = acquire_mutex()
+    mutex = check_single_instance()
     if not mutex:
-        logger.warning("Another instance of Thunderobot RGB Control is already running.")
+        logger.warning("Another instance of Thunderobot RGB Control is already running. Exiting.")
         sys.exit(0)
 
-    start_minimized = ("--minimized" in sys.argv)
-
-    from driver import driver
-    from config import config
-    from effects import engine
-    from gui import MainWindow
-    from tray import TrayIcon
-
+    # Start Lighting Engine & Wallpaper Engine Sync
     engine.start()
 
-    window_ref = [None]
+    main_win = None
 
-    def show_window_safe():
-        if window_ref[0]:
-            try:
-                window_ref[0].after(0, _show_window_main)
-            except Exception:
-                pass
+    def get_main_win():
+        return main_win
 
-    def _show_window_main():
-        if window_ref[0]:
-            win = window_ref[0]
-            win.deiconify()
-            win.lift()
-            win.attributes("-topmost", True)
-            win.after(150, lambda: win.attributes("-topmost", False))
-            win.focus_force()
+    main_win = MainWindow(on_close_callback=lambda: None)
 
-    def toggle_power():
-        new_state = not config.get("power", True)
-        config.set("power", new_state)
-        engine.update_params(power=new_state)
-        driver.set_power(new_state)
-        if window_ref[0]:
-            try:
-                window_ref[0].power_switch.select() if new_state else window_ref[0].power_switch.deselect()
-            except Exception:
-                pass
-
-    def set_mode(mode_name):
-        config.set("mode", mode_name)
-        engine.update_params(mode=mode_name)
-        if window_ref[0]:
-            try:
-                window_ref[0].mode_var.set(mode_name)
-                window_ref[0]._update_mode_description()
-            except Exception:
-                pass
-
-    def set_brightness(b_val):
-        config.set("brightness", b_val)
-        engine.update_params(brightness=b_val)
-        if window_ref[0]:
-            try:
-                window_ref[0].bright_slider.set(b_val)
-                window_ref[0].bright_lbl.configure(text=f"{int(b_val/2.55)}%")
-            except Exception:
-                pass
-
-    def exit_application():
-        logger.info("Exiting application...")
-        engine.stop()
-        if window_ref[0]:
-            window_ref[0].destroy()
-        sys.exit(0)
-
-    app_callbacks = {
-        "show_window": show_window_safe,
-        "toggle_power": toggle_power,
-        "set_mode": set_mode,
-        "set_brightness": set_brightness,
-        "exit_app": exit_application,
+    callbacks = {
+        "show_window": lambda: main_win.after(0, main_win._restore_and_focus),
+        "toggle_power": lambda: engine.execute_action("toggle_power"),
+        "set_mode": lambda m: (config.set("mode", m), engine.update_params(mode=m), main_win.after(0, main_win._sync_gui_with_engine)),
+        "set_brightness": lambda b: (config.set("brightness", b), engine.update_params(brightness=b), main_win.after(0, main_win._sync_gui_with_engine)),
+        "exit_app": lambda: main_win.after(0, main_win.destroy),
     }
 
-    tray = TrayIcon(app_callbacks)
+    tray = TrayIcon(callbacks)
     tray.start()
 
-    # Start background stock app interceptor for Fn + /
-    start_stock_app_interceptor(show_window_safe)
+    # Hook engine callbacks
+    def on_gui_request():
+        main_win.after(0, main_win._restore_and_focus)
 
-    app = MainWindow(on_close_callback=exit_application)
-    window_ref[0] = app
+    engine.on_gui_requested = on_gui_request
 
+    start_stock_app_interceptor(get_main_win)
+
+    start_minimized = "--minimized" in sys.argv or config.get("minimize_to_tray", False)
     if start_minimized:
-        app.withdraw()
+        main_win.withdraw()
+    else:
+        main_win.deiconify()
 
-    try:
-        app.mainloop()
-    except KeyboardInterrupt:
-        pass
-    finally:
-        engine.stop()
-        tray.stop()
+    logger.info("Application initialized successfully. Running mainloop...")
+    main_win.mainloop()
+
+    logger.info("Shutting down...")
+    engine.stop()
+    tray.stop()
 
 
 if __name__ == "__main__":
