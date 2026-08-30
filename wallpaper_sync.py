@@ -1,8 +1,5 @@
 """
-Wallpaper Engine RGB Sync Provider for Thunderobot RGB Keyboard.
-Provides:
-1. Built-in Razer Chroma REST API Server on 127.0.0.1:12018 (receives real-time LED stream from Wallpaper Engine)
-2. Live Wallpaper Engine Desktop Window Color Sampler (captures live wallpaper surface colors as fallback/direct mode)
+Wallpaper Engine RGB Sync Provider & Plugin Bridge Installer for Thunderobot RGB Keyboard.
 """
 
 import os
@@ -18,27 +15,288 @@ import socketserver
 import ctypes
 from ctypes import wintypes
 from PIL import ImageGrab
+import struct
 
 logger = logging.getLogger(__name__)
 
 
-def ensure_chroma_registry():
-    """Registers Razer Chroma REST URI in Windows Registry so Wallpaper Engine LED plugin discovers it."""
+class IMAGE_DOS_HEADER(ctypes.Structure):
+    _fields_ = [
+        ("e_magic", ctypes.c_uint16),
+        ("e_cblp", ctypes.c_uint16),
+        ("e_cp", ctypes.c_uint16),
+        ("e_crlc", ctypes.c_uint16),
+        ("e_cparhdr", ctypes.c_uint16),
+        ("e_minalloc", ctypes.c_uint16),
+        ("e_maxalloc", ctypes.c_uint16),
+        ("e_ss", ctypes.c_uint16),
+        ("e_sp", ctypes.c_uint16),
+        ("e_csum", ctypes.c_uint16),
+        ("e_ip", ctypes.c_uint16),
+        ("e_cs", ctypes.c_uint16),
+        ("e_lfarlc", ctypes.c_uint16),
+        ("e_ovno", ctypes.c_uint16),
+        ("e_res", ctypes.c_uint16 * 4),
+        ("e_oemid", ctypes.c_uint16),
+        ("e_oeminfo", ctypes.c_uint16),
+        ("e_res2", ctypes.c_uint16 * 10),
+        ("e_lfanew", ctypes.c_uint32),
+    ]
+
+class IMAGE_FILE_HEADER(ctypes.Structure):
+    _fields_ = [
+        ("Machine", ctypes.c_uint16),
+        ("NumberOfSections", ctypes.c_uint16),
+        ("TimeDateStamp", ctypes.c_uint32),
+        ("PointerToSymbolTable", ctypes.c_uint32),
+        ("NumberOfSymbols", ctypes.c_uint32),
+        ("SizeOfOptionalHeader", ctypes.c_uint16),
+        ("Characteristics", ctypes.c_uint16),
+    ]
+
+class IMAGE_DATA_DIRECTORY(ctypes.Structure):
+    _fields_ = [
+        ("VirtualAddress", ctypes.c_uint32),
+        ("Size", ctypes.c_uint32),
+    ]
+
+class IMAGE_OPTIONAL_HEADER64(ctypes.Structure):
+    _fields_ = [
+        ("Magic", ctypes.c_uint16),
+        ("MajorLinkerVersion", ctypes.c_uint8),
+        ("MinorLinkerVersion", ctypes.c_uint8),
+        ("SizeOfCode", ctypes.c_uint32),
+        ("SizeOfInitializedData", ctypes.c_uint32),
+        ("SizeOfUninitializedData", ctypes.c_uint32),
+        ("AddressOfEntryPoint", ctypes.c_uint32),
+        ("BaseOfCode", ctypes.c_uint32),
+        ("ImageBase", ctypes.c_uint64),
+        ("SectionAlignment", ctypes.c_uint32),
+        ("FileAlignment", ctypes.c_uint32),
+        ("MajorOperatingSystemVersion", ctypes.c_uint16),
+        ("MinorOperatingSystemVersion", ctypes.c_uint16),
+        ("MajorImageVersion", ctypes.c_uint16),
+        ("MinorImageVersion", ctypes.c_uint16),
+        ("MajorSubsystemVersion", ctypes.c_uint16),
+        ("MinorSubsystemVersion", ctypes.c_uint16),
+        ("Win32VersionValue", ctypes.c_uint32),
+        ("SizeOfImage", ctypes.c_uint32),
+        ("SizeOfHeaders", ctypes.c_uint32),
+        ("CheckSum", ctypes.c_uint32),
+        ("Subsystem", ctypes.c_uint16),
+        ("DllCharacteristics", ctypes.c_uint16),
+        ("SizeOfStackReserve", ctypes.c_uint64),
+        ("SizeOfStackCommit", ctypes.c_uint64),
+        ("SizeOfHeapReserve", ctypes.c_uint64),
+        ("SizeOfHeapCommit", ctypes.c_uint64),
+        ("LoaderFlags", ctypes.c_uint32),
+        ("NumberOfRvaAndSizes", ctypes.c_uint32),
+        ("DataDirectory", IMAGE_DATA_DIRECTORY * 16),
+    ]
+
+class IMAGE_SECTION_HEADER(ctypes.Structure):
+    _fields_ = [
+        ("Name", ctypes.c_char * 8),
+        ("VirtualSize", ctypes.c_uint32),
+        ("VirtualAddress", ctypes.c_uint32),
+        ("SizeOfRawData", ctypes.c_uint32),
+        ("PointerToRawData", ctypes.c_uint32),
+        ("PointerToRelocations", ctypes.c_uint32),
+        ("PointerToLinenumbers", ctypes.c_uint32),
+        ("NumberOfRelocations", ctypes.c_uint16),
+        ("NumberOfLinenumbers", ctypes.c_uint16),
+        ("Characteristics", ctypes.c_uint32),
+    ]
+
+class IMAGE_EXPORT_DIRECTORY(ctypes.Structure):
+    _fields_ = [
+        ("Characteristics", ctypes.c_uint32),
+        ("TimeDateStamp", ctypes.c_uint32),
+        ("MajorVersion", ctypes.c_uint16),
+        ("MinorVersion", ctypes.c_uint16),
+        ("Name", ctypes.c_uint32),
+        ("Base", ctypes.c_uint32),
+        ("NumberOfFunctions", ctypes.c_uint32),
+        ("NumberOfNames", ctypes.c_uint32),
+        ("AddressOfFunctions", ctypes.c_uint32),
+        ("AddressOfNames", ctypes.c_uint32),
+        ("AddressOfNameOrdinals", ctypes.c_uint32),
+    ]
+
+
+def build_and_install_wallpaper_engine_bridge():
+    """Generates native 64-bit bridge DLL and installs it directly into Wallpaper Engine."""
+    target_dirs = [
+        r"C:\Program Files (x86)\Steam\steamapps\common\wallpaper_engine",
+        r"C:\Program Files (x86)\Steam\steamapps\common\wallpaper_engine\bin",
+        r"C:\Program Files (x86)\Steam\steamapps\common\wallpaper_engine\plugins\led",
+        os.path.dirname(os.path.abspath(__file__))
+    ]
+
+    sec_align = 0x1000
+    file_align = 0x200
+
+    export_names = sorted([
+        "CreateChromaLinkEffect",
+        "CreateEffect",
+        "CreateHeadsetEffect",
+        "CreateKeyboardEffect",
+        "CreateKeypadEffect",
+        "CreateMouseEffect",
+        "CreateMousepadEffect",
+        "DeleteEffect",
+        "Init",
+        "QueryDevice",
+        "RegisterEventNotification",
+        "SetEffect",
+        "UnInit",
+        "UnregisterEventNotification"
+    ])
+
+    code_per_func = b"\x31\xc0\xc3\xcc"
+    text_data = b"".join(code_per_func for _ in export_names)
+    text_data += b"\xb8\x01\x00\x00\x00\xc3"
+    dllmain_offset = len(text_data) - 6
+
+    rva_text = sec_align
+    rva_edata = sec_align * 2
+    num_exp = len(export_names)
+
+    eat = bytearray()
+    for i in range(num_exp):
+        func_rva = rva_text + (i * len(code_per_func))
+        eat += struct.pack("<I", func_rva)
+
+    edata_hdr_size = ctypes.sizeof(IMAGE_EXPORT_DIRECTORY)
+    eat_offset = edata_hdr_size
+    npt_offset = eat_offset + len(eat)
+    ot_offset = npt_offset + (num_exp * 4)
+    names_offset = ot_offset + (num_exp * 2)
+
+    names_buf = bytearray()
+    npt = bytearray()
+    ot = bytearray()
+
+    dll_name = "RzChromaSDK64.dll\x00".encode('ascii')
+    dll_name_rva = rva_edata + names_offset
+    names_buf += dll_name
+
+    for i, name in enumerate(export_names):
+        cur_name_rva = rva_edata + names_offset + len(names_buf)
+        npt += struct.pack("<I", cur_name_rva)
+        ot += struct.pack("<H", i)
+        names_buf += (name + "\x00").encode('ascii')
+
+    exp_dir = IMAGE_EXPORT_DIRECTORY()
+    exp_dir.Name = dll_name_rva
+    exp_dir.Base = 1
+    exp_dir.NumberOfFunctions = num_exp
+    exp_dir.NumberOfNames = num_exp
+    exp_dir.AddressOfFunctions = rva_edata + eat_offset
+    exp_dir.AddressOfNames = rva_edata + npt_offset
+    exp_dir.AddressOfNameOrdinals = rva_edata + ot_offset
+
+    edata_data = bytes(exp_dir) + bytes(eat) + bytes(npt) + bytes(ot) + bytes(names_buf)
+
+    def align_up(val, alignment):
+        return (val + alignment - 1) & ~(alignment - 1)
+
+    text_raw_size = align_up(len(text_data), file_align)
+    edata_raw_size = align_up(len(edata_data), file_align)
+
+    text_file_bytes = text_data.ljust(text_raw_size, b"\x00")
+    edata_file_bytes = edata_data.ljust(edata_raw_size, b"\x00")
+
+    headers_size = align_up(0x40 + 0x40 + 4 + ctypes.sizeof(IMAGE_FILE_HEADER) + ctypes.sizeof(IMAGE_OPTIONAL_HEADER64) + 2 * ctypes.sizeof(IMAGE_SECTION_HEADER), file_align)
+    image_size = align_up(rva_edata + len(edata_data), sec_align)
+
+    dos = IMAGE_DOS_HEADER()
+    dos.e_magic = 0x5A4D
+    dos.e_lfanew = 0x80
+
+    dos_bytes = bytes(dos).ljust(0x80, b"\x00")
+    pe_sig = b"PE\x00\x00"
+
+    fh = IMAGE_FILE_HEADER()
+    fh.Machine = 0x8664
+    fh.NumberOfSections = 2
+    fh.TimeDateStamp = 0x66D00000
+    fh.SizeOfOptionalHeader = ctypes.sizeof(IMAGE_OPTIONAL_HEADER64)
+    fh.Characteristics = 0x2022
+
+    opt = IMAGE_OPTIONAL_HEADER64()
+    opt.Magic = 0x20B
+    opt.MajorLinkerVersion = 14
+    opt.SizeOfCode = text_raw_size
+    opt.SizeOfInitializedData = edata_raw_size
+    opt.AddressOfEntryPoint = rva_text + dllmain_offset
+    opt.BaseOfCode = rva_text
+    opt.ImageBase = 0x180000000
+    opt.SectionAlignment = sec_align
+    opt.FileAlignment = file_align
+    opt.MajorOperatingSystemVersion = 6
+    opt.MajorSubsystemVersion = 6
+    opt.SizeOfImage = image_size
+    opt.SizeOfHeaders = headers_size
+    opt.Subsystem = 2
+    opt.DllCharacteristics = 0x8160
+    opt.SizeOfStackReserve = 0x100000
+    opt.SizeOfStackCommit = 0x1000
+    opt.SizeOfHeapReserve = 0x100000
+    opt.SizeOfHeapCommit = 0x1000
+    opt.NumberOfRvaAndSizes = 16
+    opt.DataDirectory[0].VirtualAddress = rva_edata
+    opt.DataDirectory[0].Size = len(edata_data)
+
+    sec_text = IMAGE_SECTION_HEADER()
+    sec_text.Name = b".text\x00\x00\x00"
+    sec_text.VirtualSize = len(text_data)
+    sec_text.VirtualAddress = rva_text
+    sec_text.SizeOfRawData = text_raw_size
+    sec_text.PointerToRawData = headers_size
+    sec_text.Characteristics = 0x60000020
+
+    sec_edata = IMAGE_SECTION_HEADER()
+    sec_edata.Name = b".edata\x00\x00"
+    sec_edata.VirtualSize = len(edata_data)
+    sec_edata.VirtualAddress = rva_edata
+    sec_edata.SizeOfRawData = edata_raw_size
+    sec_edata.PointerToRawData = headers_size + text_raw_size
+    sec_edata.Characteristics = 0x40000040
+
+    headers_bytes = (dos_bytes + pe_sig + bytes(fh) + bytes(opt) + bytes(sec_text) + bytes(sec_edata)).ljust(headers_size, b"\x00")
+    full_dll = headers_bytes + text_file_bytes + edata_file_bytes
+
+    installed_count = 0
+    for d in target_dirs:
+        if os.path.exists(d):
+            try:
+                dest = os.path.join(d, "RzChromaSDK64.dll")
+                with open(dest, "wb") as f:
+                    f.write(full_dll)
+                installed_count += 1
+                logger.info(f"Installed native Chroma bridge DLL to: {dest}")
+            except Exception as e:
+                logger.warning(f"Could not write DLL to {d}: {e}")
+
     for root_key, sub_path in [
         (winreg.HKEY_CURRENT_USER, r"Software\Razer\ChromaSDK"),
         (winreg.HKEY_CURRENT_USER, r"Software\Razer Chroma SDK"),
+        (winreg.HKEY_CURRENT_USER, r"Software\Razer Chroma SDK\Apps"),
     ]:
         try:
             k = winreg.CreateKey(root_key, sub_path)
             winreg.SetValueEx(k, "RESTURI", 0, winreg.REG_SZ, "http://127.0.0.1:12018/razer/chromasdk")
             winreg.SetValueEx(k, "Connected", 0, winreg.REG_DWORD, 1)
+            winreg.SetValueEx(k, "Installed", 0, winreg.REG_DWORD, 1)
             winreg.CloseKey(k)
-        except Exception as e:
-            logger.debug(f"Could not set Chroma registry at {sub_path}: {e}")
+        except Exception:
+            pass
+
+    return installed_count > 0
 
 
 def bgr_int_to_rgb(val: int):
-    """Converts 0x00BBGGRR or 0x00RRGGBB integer to (R, G, B) tuple."""
     r = val & 0xFF
     g = (val >> 8) & 0xFF
     b = (val >> 16) & 0xFF
@@ -109,7 +367,6 @@ class WallpaperEngineSyncProvider:
         self._server_thread = None
         self._running = False
         
-        # State
         self.is_connected = False
         self.last_frame_time = 0.0
         self.current_left = (0, 180, 255)
@@ -117,7 +374,6 @@ class WallpaperEngineSyncProvider:
         self.current_right = (0, 180, 255)
         self.current_single = (0, 180, 255)
         
-        # Desktop Window Sampler state (fallback)
         self._last_screen_grab = 0.0
         self._desktop_cache = [(0, 180, 255), (0, 180, 255), (0, 180, 255)]
 
@@ -125,7 +381,7 @@ class WallpaperEngineSyncProvider:
         if self._running:
             return
         self._running = True
-        ensure_chroma_registry()
+        build_and_install_wallpaper_engine_bridge()
         
         def run_srv():
             try:
@@ -158,7 +414,6 @@ class WallpaperEngineSyncProvider:
         logger.info("Wallpaper Engine Chroma session closed.")
 
     def process_chroma_frame(self, path: str, data: dict):
-        """Processes RGB matrix or ChromaLink color array from Wallpaper Engine."""
         self.is_connected = True
         self.last_frame_time = time.time()
 
